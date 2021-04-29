@@ -1,0 +1,24 @@
+version: 2
+updates:
+- package-ecosystem: pip
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "13:00"
+  target-branch: dciborow/requirements-dependabot
+  allow:
+  - dependency-type: direct
+  - dependency-type: indirect
+  ignore:
+  - dependency-name: azure-cli-core
+    versions:
+    - 2.21.0
+    - 2.22.0
+  - dependency-name: transformers
+    versions:
+    - 4.4.1
+    - 4.4.2
+    - 4.5.0
+  - dependency-name: tensorflow
+    versions:
+    - 2.4.0
