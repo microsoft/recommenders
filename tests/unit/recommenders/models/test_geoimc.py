@@ -17,7 +17,7 @@ try:
         reduce_dims,
     )
     from pymanopt.manifolds import Stiefel, SymmetricPositiveDefinite
-except:
+except ImportError:
     pass  # skip if pymanopt not installed
 
 
@@ -141,9 +141,9 @@ def test_inferer_infer(dataPtr):
     colFeatureDim = test_data.get_entity("col").shape[1]
     rank = 2
     W = [
-        Stiefel(rowFeatureDim, rank).rand(),
-        SymmetricPositiveDefinite(rank).rand(),
-        Stiefel(colFeatureDim, rank).rand(),
+        Stiefel(rowFeatureDim, rank).random_point(),
+        SymmetricPositiveDefinite(rank).random_point(),
+        Stiefel(colFeatureDim, rank).random_point(),
     ]
 
     Inferer(method="dot").infer(test_data, W)

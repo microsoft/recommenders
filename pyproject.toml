@@ -1,11 +1,11 @@
 [build-system]
 requires = [
-    "setuptools>=52",
+    "setuptools>=67",
     "wheel>=0.36",
     "numpy>=1.15,<2",
 ]
 dependencies = [
-    "setuptools>=52",
+    "setuptools>=67",
     "wheel>=0.36",
     "numpy>=1.15,<2",
 ]

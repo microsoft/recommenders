@@ -1,0 +1,5 @@
+# 2024/02/29: pymanopt bumped to python 3.8
+pymanopt @git+https://github.com/pymanopt/pymanopt@e13cecaec3089c790cc93174840b2f557d179b3f ; python_version<'3.12'
+
+# Jun 2024: Fixes py312
+pymanopt @git+https://github.com/pymanopt/pymanopt@1de3b6f47258820fdc072fceaeaa763b9fd263b0 ; python_version>='3.12'

@@ -11,8 +11,9 @@ from scipy.sparse import csr_matrix
 from numba import njit, prange
 from pymanopt import Problem
 from pymanopt.manifolds import Stiefel, Product, SymmetricPositiveDefinite
-from pymanopt.solvers import ConjugateGradient
-from pymanopt.solvers.linesearch import LineSearchBackTracking
+from pymanopt.autodiff.backends import numpy as backend_decorator
+from pymanopt.optimizers import ConjugateGradient
+from pymanopt.optimizers.line_search import BackTrackingLineSearcher
 
 
 class IMCProblem(object):
@@ -68,7 +69,7 @@ class IMCProblem(object):
                 residual_global[j] = num - cd[j]
         return residual_global
 
-    def _cost(self, params, residual_global):
+    def _cost(self, U, S, VT, residual_global):
         """Compute the cost of GeoIMC optimization problem
 
         Args:
@@ -76,15 +77,11 @@ class IMCProblem(object):
             the cost needs to be evaluated.
             residual_global (csr_matrix): Residual matrix.
         """
-        U = params[0]
-        B = params[1]
-        V = params[2]
-
-        regularizer = 0.5 * self.lambda1 * np.sum(B**2)
+        regularizer = 0.5 * self.lambda1 * np.sum(S**2)
 
         IMCProblem._computeLoss_csrmatrix(
-            self.X.dot(U.dot(B)),
-            V.T.dot(self.Z.T),
+            self.X.dot(U.dot(S)),
+            VT.T.dot(self.Z.T),
             self.Y.data,
             self.Y.indices,
             self.Y.indptr,
@@ -94,7 +91,7 @@ class IMCProblem(object):
 
         return cost
 
-    def _egrad(self, params, residual_global):
+    def _egrad(self, U, S, VT, residual_global):
         """Computes the euclidean gradient
 
         Args:
@@ -102,29 +99,25 @@ class IMCProblem(object):
             the cost needs to be evaluated.
             residual_global (csr_matrix): Residual matrix.
         """
-        U = params[0]
-        B = params[1]
-        V = params[2]
-
         residual_global_csr = csr_matrix(
             (residual_global, self.Y.indices, self.Y.indptr),
             shape=self.shape,
         )
 
         gradU = (
-            np.dot(self.X.T, residual_global_csr.dot(self.Z.dot(V.dot(B.T))))
+            np.dot(self.X.T, residual_global_csr.dot(self.Z.dot(VT.dot(S.T))))
             / self.nSamples
         )
 
         gradB = (
-            np.dot((self.X.dot(U)).T, residual_global_csr.dot(self.Z.dot(V)))
+            np.dot((self.X.dot(U)).T, residual_global_csr.dot(self.Z.dot(VT)))
             / self.nSamples
-            + self.lambda1 * B
+            + self.lambda1 * S
         )
         gradB_sym = (gradB + gradB.T) / 2
 
         gradV = (
-            np.dot((self.X.dot(U.dot(B))).T, residual_global_csr.dot(self.Z)).T
+            np.dot((self.X.dot(U.dot(S))).T, residual_global_csr.dot(self.Z)).T
             / self.nSamples
         )
 
@@ -154,20 +147,29 @@ class IMCProblem(object):
         residual_global = np.zeros(self.Y.data.shape)
 
         solver = ConjugateGradient(
-            maxtime=max_opt_time,
-            maxiter=max_opt_iter,
-            linesearch=LineSearchBackTracking(),
-        )
-        prb = Problem(
-            manifold=self.manifold,
-            cost=lambda x: self._cost(x, residual_global),
-            egrad=lambda z: self._egrad(z, residual_global),
+            max_time=max_opt_time,
+            max_iterations=max_opt_iter,
+            line_searcher=BackTrackingLineSearcher(),
             verbosity=verbosity,
         )
-        solution = solver.solve(prb, x=self.W)
-        self.W = [solution[0], solution[1], solution[2]]
 
-        return self._cost(self.W, residual_global)
+        @backend_decorator(self.manifold)
+        def _cost(u, s, vt):
+            return self._cost(u, s, vt, residual_global)
+
+        @backend_decorator(self.manifold)
+        def _egrad(u, s, vt):
+            return self._egrad(u, s, vt, residual_global)
+
+        prb = Problem(
+            manifold=self.manifold,
+            cost=_cost,
+            euclidean_gradient=_egrad,
+        )
+        solution = solver.run(prb, initial_point=self.W)
+        self.W = [solution.point[0], solution.point[1], solution.point[2]]
+
+        return solution.cost
 
     def reset(self):
         """Reset the model."""

@@ -70,7 +70,7 @@ jobs:
     strategy:
       max-parallel: 50 # Usage limits: https://docs.github.com/en/actions/learn-github-actions/usage-limits-billing-and-administration
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
         test-group:  ${{ fromJSON(needs.get-test-groups.outputs.test_groups) }}
     steps:
       - name: Check out repository code
