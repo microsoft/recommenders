@@ -13,12 +13,11 @@ from recommenders.utils.constants import (
 )
 
 try:
-    from recommenders.utils.tf_utils import pandas_input_fn, MODEL_DIR
     from recommenders.models.wide_deep.wide_deep_utils import (
-        build_model,
-        build_feature_columns,
+        WideAndDeep,
+        WideAndDeepDataset,
+        WideAndDeepHyperParams,
     )
-    import tensorflow as tf
 except ImportError:
     pass  # skip this import if we are in cpu environment
 
@@ -32,109 +31,87 @@ def pd_df():
         {
             DEFAULT_USER_COL: [1, 1, 1, 2, 2, 2],
             DEFAULT_ITEM_COL: [1, 2, 3, 1, 4, 5],
-            ITEM_FEAT_COL: [
-                [1, 1, 1],
-                [2, 2, 2],
-                [3, 3, 3],
-                [1, 1, 1],
-                [4, 4, 4],
-                [5, 5, 5],
-            ],
             DEFAULT_RATING_COL: [5, 4, 3, 5, 5, 3],
         }
     )
+    item_feat = pd.DataFrame({
+        DEFAULT_ITEM_COL: [1, 2, 3, 4, 5],
+        ITEM_FEAT_COL: [
+            [1, 1, 1],
+            [2, 2, 2],
+            [3, 3, 3],
+            [4, 4, 4],
+            [5, 5, 5],
+        ],
+    })
     users = df.drop_duplicates(DEFAULT_USER_COL)[DEFAULT_USER_COL].values
     items = df.drop_duplicates(DEFAULT_ITEM_COL)[DEFAULT_ITEM_COL].values
-    return df, users, items
-
-
-@pytest.mark.gpu
-def test_wide_model(pd_df, tmp):
-    data, users, items = pd_df
-
-    # Test wide model
-    # Test if wide column has two original features and one crossed feature
-    wide_columns, _ = build_feature_columns(
-        users, items, model_type="wide", crossed_feat_dim=10
-    )
-    assert len(wide_columns) == 3
-    # Check crossed feature dimension
-    assert wide_columns[2].hash_bucket_size == 10
-    # Check model type
-    model = build_model(
-        os.path.join(tmp, "wide_" + MODEL_DIR), wide_columns=wide_columns
-    )
-    assert isinstance(model, tf.compat.v1.estimator.LinearRegressor)
-    # Test if model train works
-    model.train(
-        input_fn=pandas_input_fn(
-            df=data,
-            y_col=DEFAULT_RATING_COL,
-            batch_size=1,
-            num_epochs=None,
-            shuffle=True,
-        ),
-        steps=1,
-    )
-
-    # Close the event file so that the model folder can be cleaned up.
-    summary_writer = tf.compat.v1.summary.FileWriterCache.get(model.model_dir)
-    summary_writer.close()
-
+    return df, users, items, item_feat
 
 @pytest.mark.gpu
-def test_deep_model(pd_df, tmp):
-    data, users, items = pd_df
+def test_wide_deep_dataset(pd_df):
+    data, users, items, item_feat = pd_df
+    dataset = WideAndDeepDataset(data)
+    assert len(dataset) == len(data)
+    # Add +1 because user 0 does count for `dataset`
+    assert dataset.n_users == len(users)+1
+    assert dataset.n_items == len(items)+1
+    assert dataset.n_cont_features == 0
+    item, rating = dataset[0]
+    assert list(item['interactions']) == [1,1]
+    assert 'continuous_features' not in item
+    assert rating == 5
 
-    # Test if deep columns have user and item features
-    _, deep_columns = build_feature_columns(users, items, model_type="deep")
-    assert len(deep_columns) == 2
-    # Check model type
-    model = build_model(
-        os.path.join(tmp, "deep_" + MODEL_DIR), deep_columns=deep_columns
-    )
-    assert isinstance(model, tf.compat.v1.estimator.DNNRegressor)
-    # Test if model train works
-    model.train(
-        input_fn=pandas_input_fn(
-            df=data, y_col=DEFAULT_RATING_COL, batch_size=1, num_epochs=1, shuffle=False
-        )
-    )
-
-    # Close the event file so that the model folder can be cleaned up.
-    summary_writer = tf.compat.v1.summary.FileWriterCache.get(model.model_dir)
-    summary_writer.close()
-
+    # Test using the item features
+    dataset = WideAndDeepDataset(data, item_feat=item_feat)
+    assert len(dataset) == len(data)
+    # Add +1 because user 0 does count for `dataset`
+    assert dataset.n_users == len(users)+1
+    assert dataset.n_items == len(items)+1
+    assert dataset.n_cont_features == 3
+    item, rating = dataset[0]
+    assert list(item['interactions']) == [1,1]
+    assert list(item['continuous_features']) == [1,1,1]
+    assert rating == 5
 
 @pytest.mark.gpu
 def test_wide_deep_model(pd_df, tmp):
-    data, users, items = pd_df
+    data, users, items, item_feat = pd_df
 
-    # Test if wide and deep columns have correct features
-    wide_columns, deep_columns = build_feature_columns(
-        users, items, model_type="wide_deep"
+    dataset = WideAndDeepDataset(data)
+    default_hparams = WideAndDeepHyperParams()
+    model = WideAndDeep(
+        dataset,
+        dataset,
     )
-    assert len(wide_columns) == 3
-    assert len(deep_columns) == 2
-    # Check model type
-    model = build_model(
-        os.path.join(tmp, "wide_deep_" + MODEL_DIR),
-        wide_columns=wide_columns,
-        deep_columns=deep_columns,
-    )
-    assert isinstance(model, tf.compat.v1.estimator.DNNLinearCombinedRegressor)
-    # Test if model train works
-    model.train(
-        input_fn=pandas_input_fn(
-            df=data,
-            y_col=DEFAULT_RATING_COL,
-            batch_size=1,
-            num_epochs=None,
-            shuffle=True,
-        ),
-        steps=1,
+    
+    assert model.model.deep[0].in_features == default_hparams.item_dim + default_hparams.user_dim
+    assert model.model.head[-1].out_features == 1
+
+    # Test if the model train works
+    model.fit_step()
+    assert model.current_epoch == len(model.train_loss_history) == len(model.test_loss_history) == 1
+
+@pytest.mark.gpu
+def test_wide_deep_recs(pd_df, tmp):
+    data, users, items, item_feat = pd_df
+
+    dataset = WideAndDeepDataset(data)
+    model = WideAndDeep(
+        dataset,
+        dataset,
     )
 
-    # Close the event file so that the model folder can be cleaned up.
-    summary_writer = tf.compat.v1.summary.FileWriterCache.get(model.model_dir)
-    summary_writer.close()
+    recs = model.recommend_k_items(users, items, top_k=4, remove_seen=False)
+
+    assert len(recs) == len(users)*4
+    assert set(recs[DEFAULT_USER_COL].unique()) == set(users)
+    assert set(recs[DEFAULT_ITEM_COL].unique()).issubset(items)
+
+    # Each user has voted in 3 items, therefore
+    # only two items remain to be recommended per user
+    # even if we specify top_k>2
+    recs = model.recommend_k_items(users, items, top_k=4)
+    assert len(recs) == 2*2
+    assert set(recs[DEFAULT_USER_COL].unique()).issubset(users)
+    assert set(recs[DEFAULT_ITEM_COL].unique()).issubset(items)
