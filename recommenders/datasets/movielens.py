@@ -47,6 +47,7 @@ class _DataFormat:
         has_header=False,
         item_sep=None,
         item_path=None,
+        user_path=None,
         item_has_header=False,
     ):
         """MovieLens data format container as a different size of MovieLens data file
@@ -58,6 +59,7 @@ class _DataFormat:
             has_header (bool): Whether the rating data contains a header line or not
             item_sep (str): Item data delimiter
             item_path (str): Item data path within the original zip file
+            user_path (str): User data path within the original zip file
             item_has_header (bool): Whether the item data contains a header line or not
         """
 
@@ -69,6 +71,7 @@ class _DataFormat:
         # Item file
         self._item_sep = item_sep
         self._item_path = item_path
+        self._user_path = user_path
         self._item_has_header = item_has_header
 
     @property
@@ -92,20 +95,24 @@ class _DataFormat:
         return self._item_path
 
     @property
+    def user_path(self):
+        return self._user_path
+
+    @property
     def item_has_header(self):
         return self._item_has_header
 
 
 # 10m and 20m data do not have user data
 DATA_FORMAT = {
-    "100k": _DataFormat("\t", "ml-100k/u.data", False, "|", "ml-100k/u.item", False),
+    "100k": _DataFormat("\t", "ml-100k/u.data", False, "|", "ml-100k/u.item", "ml-100k/u.user", False),
     "1m": _DataFormat(
-        "::", "ml-1m/ratings.dat", False, "::", "ml-1m/movies.dat", False
+        "::", "ml-1m/ratings.dat", False, "::", "ml-1m/movies.dat", "ml-1m/users.dat", False
     ),
     "10m": _DataFormat(
-        "::", "ml-10M100K/ratings.dat", False, "::", "ml-10M100K/movies.dat", False
+        "::", "ml-10M100K/ratings.dat", False, "::", "ml-10M100K/movies.dat", None, False
     ),
-    "20m": _DataFormat(",", "ml-20m/ratings.csv", True, ",", "ml-20m/movies.csv", True),
+    "20m": _DataFormat(",", "ml-20m/ratings.csv", True, ",", "ml-20m/movies.csv", None, True),
 }
 
 # Fake data for testing only
@@ -136,6 +143,31 @@ GENRES = (
     "Western",
 )
 
+# 1m data occupation index to string mapper. For 100k, the occupation labels are already in the dataset.
+OCCUPATIONS = (
+    "Other",
+    "Academic/Educator",
+    "Artist",
+    "Clerical/Admin",
+    "College/Grad student",
+    "Customer service",
+    "Doctor/Health care",
+    "Executive/Managerial",
+    "Farmer",
+    "Homemaker",
+    "K-12 student",
+    "Lawyer",
+    "Programmer",
+    "Retired",
+    "Sales/Marketing",
+    "Scientist",
+    "Self-employed",
+    "Technician/Engineer",
+    "Tradesman/Craftsman",
+    "Unemployed",
+    "Writer",
+)
+
 
 # Warning and error messages
 WARNING_MOVIE_LENS_HEADER = """MovieLens rating dataset has four columns
@@ -153,9 +185,15 @@ def load_pandas_df(
     size="100k",
     header=None,
     local_cache_path=None,
+    # Movie properties
     title_col=None,
     genres_col=None,
     year_col=None,
+    # User properties
+    age_col=None,
+    gender_col=None,
+    occupation_col=None,
+    zip_code_col=None,
 ):
     """Loads the MovieLens dataset as pd.DataFrame.
 
@@ -174,6 +212,10 @@ def load_pandas_df(
             If None, the column will not be loaded.
         year_col (str): Movie release year column name. If None, the column will not be loaded.
             If `size` is set to any of 'MOCK_DATA_FORMAT', this parameter is ignored.
+        age_col (str): User age column name. If None, the column will not be loaded.
+        gender_col (str): User gender column name. If None, the column will not be loaded.
+        occupation_col (str): User occupation column name. If None, the column will not be loaded.
+        zip_code_col (str): User zip code column name. If None, the column will not be loaded.
 
     Returns:
         pandas.DataFrame: Movie rating dataset.
@@ -219,11 +261,17 @@ def load_pandas_df(
             ],  # supply the rest of the kwarg with the dictionary
         )
 
+    user_col = header[0]
     movie_col = header[1]
 
     with download_path(local_cache_path) as path:
         filepath = os.path.join(path, "ml-{}.zip".format(size))
-        datapath, item_datapath = _maybe_download_and_extract(size, filepath)
+        datapath, item_datapath, user_datapath = _maybe_download_and_extract(size, filepath)
+
+        # Load user features such as age, gender, occupation, or zip code
+        user_df = _load_user_df(
+            size, user_datapath, user_col, age_col, gender_col, occupation_col, zip_code_col
+        )
 
         # Load movie features such as title, genres, and release year
         item_df = _load_item_df(
@@ -243,6 +291,10 @@ def load_pandas_df(
         # Convert 'rating' type to float
         if len(header) > 2:
             df[header[2]] = df[header[2]].astype(float)
+
+        # Merge rating df w/ user_df
+        if user_df is not None:
+            df = df.merge(user_df, on=header[0])
 
         # Merge rating df w/ item_df
         if item_df is not None:
@@ -353,6 +405,96 @@ def _load_item_df(size, item_datapath, movie_col, title_col, genres_col, year_co
     return item_df
 
 
+def load_user_df(
+    size="100k",
+    local_cache_path=None,
+    user_col=DEFAULT_USER_COL,
+    age_col=None,
+    gender_col=None,
+    occupation_col=None,
+    zip_code_col=None,
+) -> pd.DataFrame:
+    """Loads user info
+
+    Args:
+        size (str, optional): Size of the data to load. One of ("100k", "1m", "10m", "20m"). Defaults to "100k".
+        local_cache_path (str, optional): Path (directory or a zip file) to cache the downloaded zip file.
+            If None, all the intermediate files will be sotred in a temporary directory and removed after use.
+        user_col (str): User id column name. Defaults to DEFAULT_USER_COL.
+        age_col (str): User age column name. If None, the column will not be loaded.
+        gender_col (str): User gender column name (M/F only). If None, the column will not be loaded.
+        occupation_col (str): User occupation column name. If None, the column will not be loaded.
+        zip_code_col (str): User zip code column name. If None, the column will not be loaded.
+
+    Returns:
+        pandas.DatFrame: User information data.
+    """
+    size = size.lower()
+
+    if size not in DATA_FORMAT:
+        raise ValueError(f"Size: {size}. " + ERROR_MOVIE_LENS_SIZE)
+
+    with download_path(local_cache_path) as path:
+        filepath = os.path.join(path, "ml-{}.zip".format(size))
+        _, _, user_datapath = _maybe_download_and_extract(size, filepath)
+        user_df = _load_user_df(
+            size, user_datapath, user_col, age_col, gender_col, occupation_col, zip_code_col
+        )
+
+    return user_df
+
+
+def _load_user_df(size, user_datapath, user_col, age_col, gender_col, occupation_col, zip_code_col):
+    """Loads user info"""
+    if all(c is None for c in [age_col, gender_col, occupation_col, zip_code_col]):
+        return None
+
+    if DATA_FORMAT[size].user_path is None:
+        raise ValueError(f"Movielens {size} does not support user info. Do not request user info columns.")
+
+    header = {
+        0: user_col,
+    }
+
+    # 100k has the gender and age columns order swapped
+    if age_col is not None:
+        if size == '100k':
+            header[1] = age_col
+        else:
+            header[2] = age_col
+
+    if gender_col is not None:
+        if size == '100k':
+            header[2] = gender_col
+        else:
+            header[1] = gender_col
+
+    if occupation_col is not None:
+        header[3] = occupation_col
+
+    if zip_code_col is not None:
+        header[4] = zip_code_col
+
+    usecols = sorted(header.keys())
+    user_header = [header[k] for k in usecols]
+
+    user_df = pd.read_csv(
+        user_datapath,
+        sep=DATA_FORMAT[size].item_separator,
+        engine="python",
+        names=user_header,
+        usecols=usecols,
+        header=0 if DATA_FORMAT[size].item_has_header else None,
+        encoding="ISO-8859-1",
+    )
+
+    # 100k has the labels, but the rest do not
+    if size != '100k':
+        user_df[occupation_col] = user_df[occupation_col].map(lambda x: OCCUPATIONS[x])
+
+    return user_df
+
+
 def load_spark_df(
     spark,
     size="100k",
@@ -363,6 +505,10 @@ def load_spark_df(
     title_col=None,
     genres_col=None,
     year_col=None,
+    age_col=None,
+    gender_col=None,
+    occupation_col=None,
+    zip_code_col=None,
 ):
     """Loads the MovieLens dataset as `pyspark.sql.DataFrame`.
 
@@ -386,6 +532,10 @@ def load_spark_df(
             If None, the column will not be loaded.
         year_col (str): Movie release year column name. If None, the column will not be loaded.
             If `size` is set to any of 'MOCK_DATA_FORMAT', this parameter is ignored.
+        age_col (str): User age column name. If None, the column will not be loaded.
+        gender_col (str): User gender column name. If None, the column will not be loaded.
+        occupation_col (str): User occupation column name. If None, the column will not be loaded.
+        zip_code_col (str): User zip code column name. If None, the column will not be loaded.
 
     Returns:
         pyspark.sql.DataFrame: Movie rating dataset.
@@ -438,11 +588,12 @@ def load_spark_df(
     if len(schema) < 2:
         raise ValueError(ERROR_HEADER)
 
+    user_col = schema[0].name
     movie_col = schema[1].name
 
     with download_path(local_cache_path) as path:
         filepath = os.path.join(path, "ml-{}.zip".format(size))
-        datapath, item_datapath = _maybe_download_and_extract(size, filepath)
+        datapath, item_datapath, user_datapath = _maybe_download_and_extract(size, filepath)
         spark_datapath = "file:///" + datapath  # shorten form of file://localhost/
 
         # Load movie features such as title, genres, and release year.
@@ -452,6 +603,14 @@ def load_spark_df(
             size, item_datapath, movie_col, title_col, genres_col, year_col
         )
         item_df = spark.createDataFrame(item_pd_df) if item_pd_df is not None else None
+
+        # Load user features such as age, gender, occupation and zip code
+        # Since the file size is small, we directly load as pd.DataFrame from the driver node
+        # and then convert into pyspark.sql.DataFrame
+        user_pd_df = _load_user_df(
+            size, user_datapath, user_col, age_col, gender_col, occupation_col, zip_code_col,
+        )
+        user_df = spark.createDataFrame(user_pd_df) if user_pd_df is not None else None
 
         if is_databricks():
             if dbutils is None:
@@ -486,6 +645,10 @@ def load_spark_df(
         # Merge rating df w/ item_df
         if item_df is not None:
             df = df.join(item_df, movie_col, "left")
+
+        # Merge rating w/ user_df
+        if user_df is not None:
+            df = df.join(user_df, user_col, "left")
 
         # Cache and force trigger action since data-file might be removed.
         df.cache()
@@ -535,11 +698,17 @@ def _maybe_download_and_extract(size, dest_path):
     _, item_filename = os.path.split(DATA_FORMAT[size].item_path)
     item_path = os.path.join(dirs, item_filename)
 
-    if not os.path.exists(rating_path) or not os.path.exists(item_path):
-        download_movielens(size, dest_path)
-        extract_movielens(size, rating_path, item_path, dest_path)
+    if DATA_FORMAT[size].user_path is None:
+        user_path = None
+    else:
+        _, user_filename = os.path.split(DATA_FORMAT[size].user_path)
+        user_path = os.path.join(dirs, user_filename)
 
-    return rating_path, item_path
+    if not all(p is None or os.path.exists(p) for p in [rating_path, item_path, user_path]):
+        download_movielens(size, dest_path)
+        extract_movielens(size, rating_path, item_path, user_path, dest_path)
+
+    return rating_path, item_path, user_path
 
 
 def download_movielens(size, dest_path):
@@ -557,7 +726,7 @@ def download_movielens(size, dest_path):
     maybe_download(url, file, work_directory=dirs)
 
 
-def extract_movielens(size, rating_path, item_path, zip_path):
+def extract_movielens(size, rating_path, item_path, user_path, zip_path):
     """Extract MovieLens rating and item datafiles from the MovieLens raw zip file.
 
     To extract all files instead of just rating and item datafiles,
@@ -567,6 +736,7 @@ def extract_movielens(size, rating_path, item_path, zip_path):
         size (str): Size of the data to load. One of ("100k", "1m", "10m", "20m").
         rating_path (str): Destination path for rating datafile
         item_path (str): Destination path for item datafile
+        user_path (str): Destination path for user datafile
         zip_path (str): zipfile path
     """
     with ZipFile(zip_path, "r") as z:
@@ -574,6 +744,9 @@ def extract_movielens(size, rating_path, item_path, zip_path):
             shutil.copyfileobj(zf, f)
         with z.open(DATA_FORMAT[size].item_path) as zf, open(item_path, "wb") as f:
             shutil.copyfileobj(zf, f)
+        if DATA_FORMAT[size].user_path is not None:
+            with z.open(DATA_FORMAT[size].user_path) as zf, open(user_path, "wb") as f:
+                shutil.copyfileobj(zf, f)
 
 
 # For more information on data synthesis, see https://pandera.readthedocs.io/en/latest/data_synthesis_strategies.html

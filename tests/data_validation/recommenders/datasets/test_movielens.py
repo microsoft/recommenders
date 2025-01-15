@@ -25,6 +25,7 @@ from recommenders.datasets.movielens import (
     load_pandas_df,
     load_spark_df,
     load_item_df,
+    load_user_df,
     download_movielens,
     extract_movielens,
 )
@@ -284,6 +285,73 @@ def test_load_item_df(
     del df
     gc.collect()
 
+
+@pytest.mark.parametrize(
+    "size, num_users, user_example, age_example, gender_example, occupation_example, zip_code_example",
+    [
+        ("100k", 943, 1, 24, "M", "technician", "85711"),
+        ("1m", 6040, 1, 1, "F", "K-12 student", "48067"),
+    ],
+)
+def test_load_user_df(
+    size,
+    num_users,
+    user_example,
+    age_example,
+    gender_example,
+    occupation_example,
+    zip_code_example,
+    tmp,
+):
+    """Test movielens item data load (not rating data)"""
+    df = load_user_df(
+        size,
+        local_cache_path=tmp,
+        user_col="user",
+        occupation_col="occupation",
+    )
+    assert len(df) == num_users
+    # user_col and title_col should be loaded
+    assert len(df.columns) == 2
+    assert df["user"][0] == user_example
+    assert df["occupation"][0] == occupation_example
+
+    # Test title and genres
+    df = load_user_df(
+        size,
+        local_cache_path=tmp,
+        user_col="user",
+        age_col="age",
+        gender_col="gender",
+        occupation_col="occupation",
+        zip_code_col="zip_code",
+    )
+    assert len(df) == num_users
+    # user_col, age_col, gender_col, occupation_col and zip_code_col
+    assert len(df.columns) == 5
+
+    assert df["user"][0] == user_example
+    assert df["age"][0] == age_example
+    assert df["gender"][0] == gender_example
+    assert df["occupation"][0] == occupation_example
+    assert df["zip_code"][0] == zip_code_example
+    del df
+    gc.collect()
+
+
+@pytest.mark.parametrize(
+    "size",
+    ["10m", "20m"]
+)
+def test_load_user_df_error(
+    size,
+    tmp,
+):
+    assert load_user_df(size, tmp) is None
+    assert load_user_df(size, tmp, "user") is None
+
+    with pytest.raises(ValueError, match=".*does not support user info.*"):
+        load_user_df(size, tmp, "user", "age")
 
 @pytest.mark.spark
 @pytest.mark.parametrize("keep_genre_col", [True, False])
